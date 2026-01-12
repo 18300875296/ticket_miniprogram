@@ -1,0 +1,67 @@
+{
+  "screen_sizes": {
+    "1080x2340": {
+      "width": 1080,
+      "height": 2340,
+      "description": "常见手机屏幕尺寸（如小米、华为等）",
+      "damai_app": {
+        "home_tab": {
+          "x": 270,
+          "y": 2200,
+          "description": "首页标签"
+        },
+        "show_tab": {
+          "x": 540,
+          "y": 2200,
+          "description": "演出标签"
+        },
+        "my_tab": {
+          "x": 900,
+          "y": 2200,
+          "description": "我的标签"
+        },
+        "search_box": {
+          "x": 540,
+          "y": 200,
+          "description": "搜索框"
+        }
+      }
+    },
+    "1080x2400": {
+      "width": 1080,
+      "height": 2400,
+      "description": "另一种常见屏幕尺寸",
+      "damai_app": {
+        "home_tab": {
+          "x": 270,
+          "y": 2260,
+          "description": "首页标签"
+        },
+        "show_tab": {
+          "x": 540,
+          "y": 2260,
+          "description": "演出标签"
+        },
+        "my_tab": {
+          "x": 900,
+          "y": 2260,
+          "description": "我的标签"
+        }
+      }
+    }
+  },
+  "instructions": {
+    "how_to_get_coordinates": [
+      "1. 运行脚本获取 UI 层次结构: auto.get_ui_hierarchy()",
+      "2. 打开生成的 ui.xml 文件",
+      "3. 查找目标元素的 bounds 属性，格式: bounds=\"[x1,y1][x2,y2]\"",
+      "4. 计算中心点: x = (x1+x2)/2, y = (y1+y2)/2",
+      "5. 或者截图后使用图片查看器查看坐标"
+    ],
+    "how_to_add_new_screen": [
+      "1. 在 screen_sizes 中添加新的屏幕尺寸",
+      "2. 使用 get_ui_hierarchy() 或截图获取元素坐标",
+      "3. 将坐标添加到对应屏幕尺寸的配置中"
+    ]
+  }
+}

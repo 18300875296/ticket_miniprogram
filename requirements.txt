@@ -1,0 +1,4 @@
+# ADB 自动化不需要额外的 Python 依赖
+# 只需要系统安装 ADB（Android SDK Platform Tools）
+# 下载地址: https://developer.android.com/studio/releases/platform-tools
+

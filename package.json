@@ -1,0 +1,8 @@
+{
+  "name": "ticket-miniprogram",
+  "version": "1.0.0",
+  "description": "Android 真机大麦应用自动化脚本",
+  "dependencies": {
+    "appium": "^3.1.2"
+  }
+}
