@@ -2,7 +2,7 @@
 ADB 坐标自动化使用示例
 演示如何使用 ADB 坐标方式进行自动化操作
 """
-from adb_automation import ADBAutomation, KeyCode
+from adb_automation import ADBAutomation, KeyCode, FastClicker
 import time
 
 
@@ -240,6 +240,96 @@ def example_coordinate_config():
         print(f"错误: {e}")
 
 
+def example_fast_clicker():
+    """示例7：高频点击器 - 快速抢购"""
+    print("\n" + "=" * 50)
+    print("示例7：高频点击器 - 快速抢购")
+    print("=" * 50)
+    
+    auto = ADBAutomation()
+    
+    if not auto.connect():
+        return
+    
+    try:
+        # 获取屏幕尺寸
+        width, height = auto.get_screen_size()
+        print(f"屏幕尺寸: {width} x {height}")
+        
+        # 提示用户输入按钮坐标
+        print("\n请输入抢购按钮的坐标：")
+        button_x = int(input("按钮 X 坐标: ").strip())
+        button_y = int(input("按钮 Y 坐标: ").strip())
+        
+        # 配置参数
+        print("\n配置参数：")
+        thread_count = int(input("线程数量 (建议 3-5): ").strip() or "3")
+        refresh_interval = int(input("刷新间隔 (每 N 次点击刷新，0=不刷新): ").strip() or "10")
+        
+        # 创建快速点击器
+        clicker = FastClicker(
+            automation=auto,
+            button_x=button_x,
+            button_y=button_y
+        )
+        
+        # 启动高频点击
+        clicker.start(
+            thread_count=thread_count,
+            refresh_interval=refresh_interval,
+            min_delay=0.01,  # 最小延迟 10ms
+            max_delay=0.05,  # 最大延迟 50ms
+            stats_interval=1.0  # 每秒显示一次统计
+        )
+        
+    except KeyboardInterrupt:
+        print("\n用户中断")
+    except Exception as e:
+        print(f"错误: {e}")
+
+
+def example_fast_clicker_quick():
+    """示例8：快速抢购 - 预设坐标"""
+    print("\n" + "=" * 50)
+    print("示例8：快速抢购 - 预设坐标")
+    print("=" * 50)
+    
+    auto = ADBAutomation()
+    
+    if not auto.connect():
+        return
+    
+    try:
+        # 预设坐标（需要根据实际情况修改）
+        # 示例：1080x2340 屏幕的抢购按钮坐标
+        BUTTON_X = 540   # 按钮 X 坐标
+        BUTTON_Y = 1600  # 按钮 Y 坐标
+        
+        # 创建快速点击器
+        clicker = FastClicker(
+            automation=auto,
+            button_x=BUTTON_X,
+            button_y=BUTTON_Y
+        )
+        
+        print(f"使用预设坐标: ({BUTTON_X}, {BUTTON_Y})")
+        print("3秒后开始...")
+        time.sleep(3)
+        
+        # 启动高频点击（5个线程，每10次点击刷新一次）
+        clicker.start(
+            thread_count=5,
+            refresh_interval=10,
+            min_delay=0.01,
+            max_delay=0.05
+        )
+        
+    except KeyboardInterrupt:
+        print("\n用户中断")
+    except Exception as e:
+        print(f"错误: {e}")
+
+
 if __name__ == "__main__":
     print("ADB 坐标自动化示例")
     print("=" * 50)
@@ -250,8 +340,10 @@ if __name__ == "__main__":
     print("4. 获取元素坐标")
     print("5. 自定义工作流程")
     print("6. 使用配置文件管理坐标")
+    print("7. 高频点击器 - 快速抢购（交互式）")
+    print("8. 高频点击器 - 快速抢购（预设坐标）")
     
-    choice = input("\n请输入数字 (1-6): ").strip()
+    choice = input("\n请输入数字 (1-8): ").strip()
     
     examples = {
         '1': example_basic_operations,
@@ -260,6 +352,8 @@ if __name__ == "__main__":
         '4': example_get_coordinates,
         '5': example_custom_workflow,
         '6': example_coordinate_config,
+        '7': example_fast_clicker,
+        '8': example_fast_clicker_quick,
     }
     
     if choice in examples:

@@ -6,6 +6,9 @@ import subprocess
 import time
 import os
 import platform
+import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, List
 
 
@@ -509,6 +512,199 @@ class ADBAutomation:
                 pass
         
         return None
+    
+    def fast_tap(self, x: int, y: int):
+        """
+        快速点击 - 异步执行，不等待返回（用于高频点击场景）
+        
+        Args:
+            x: X 坐标
+            y: Y 坐标
+        """
+        if not self.device_udid or not self.adb_path:
+            return
+        
+        # 使用 Popen 异步执行，不等待返回
+        cmd = [self.adb_path, '-s', self.device_udid, 'shell', 'input', 'tap', str(x), str(y)]
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    
+    def fast_swipe(self, x1: int, y1: int, x2: int, y2: int, duration: int = 100):
+        """
+        快速滑动 - 异步执行，不等待返回（用于快速刷新）
+        
+        Args:
+            x1: 起始 X 坐标
+            y1: 起始 Y 坐标
+            x2: 结束 X 坐标
+            y2: 结束 Y 坐标
+            duration: 滑动持续时间（毫秒）
+        """
+        if not self.device_udid or not self.adb_path:
+            return
+        
+        cmd = [
+            self.adb_path, '-s', self.device_udid, 'shell', 'input', 'swipe',
+            str(x1), str(y1), str(x2), str(y2), str(duration)
+        ]
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    
+    def fast_swipe_refresh(self, center_x: Optional[int] = None, center_y: Optional[int] = None):
+        """
+        快速下拉刷新 - 异步执行（用于抢购场景）
+        
+        Args:
+            center_x: 屏幕中心 X 坐标，None 则使用屏幕宽度的一半
+            center_y: 屏幕中心 Y 坐标，None 则使用屏幕高度的一半
+        """
+        if center_x is None:
+            center_x = self.screen_width // 2 if self.screen_width else 540
+        if center_y is None:
+            center_y = self.screen_height // 2 if self.screen_height else 1200
+        
+        # 从屏幕中间向下滑动（下拉刷新）
+        start_y = center_y - 200
+        end_y = center_y + 400
+        self.fast_swipe(center_x, start_y, center_x, end_y, 100)
+
+
+class FastClicker:
+    """
+    高频点击器 - 用于快速抢购场景
+    支持多线程并发点击和自动刷新
+    """
+    
+    def __init__(self, automation: ADBAutomation, button_x: int, button_y: int, 
+                 refresh_x: Optional[int] = None, refresh_y: Optional[int] = None):
+        """
+        初始化快速点击器
+        
+        Args:
+            automation: ADBAutomation 实例
+            button_x: 按钮 X 坐标
+            button_y: 按钮 Y 坐标
+            refresh_x: 刷新滑动起始 X 坐标，None 则使用屏幕中心
+            refresh_y: 刷新滑动起始 Y 坐标，None 则使用屏幕中心
+        """
+        self.automation = automation
+        self.button_x = button_x
+        self.button_y = button_y
+        self.refresh_x = refresh_x
+        self.refresh_y = refresh_y
+        self.running = False
+        self.click_count = 0
+        self.lock = threading.Lock()
+    
+    def _fast_click(self, x: int, y: int):
+        """快速点击"""
+        self.automation.fast_tap(x, y)
+        with self.lock:
+            self.click_count += 1
+    
+    def _fast_swipe_refresh(self):
+        """快速下拉刷新"""
+        self.automation.fast_swipe_refresh(self.refresh_x, self.refresh_y)
+    
+    def worker(self, thread_id: int, refresh_interval: int = 10, 
+               min_delay: float = 0.01, max_delay: float = 0.05):
+        """
+        工作线程 - 持续点击
+        
+        Args:
+            thread_id: 线程 ID
+            refresh_interval: 每 N 次点击刷新一次
+            min_delay: 最小延迟（秒）
+            max_delay: 最大延迟（秒）
+        """
+        local_count = 0
+        while self.running:
+            # 添加微小随机延迟，避免完全同步
+            time.sleep(random.uniform(min_delay, max_delay))
+            
+            # 点击按钮
+            self._fast_click(self.button_x, self.button_y)
+            local_count += 1
+            
+            # 定期刷新
+            if refresh_interval > 0 and local_count % refresh_interval == 0:
+                self._fast_swipe_refresh()
+                time.sleep(0.1)  # 刷新后短暂等待
+    
+    def start(self, thread_count: int = 3, refresh_interval: int = 10,
+              min_delay: float = 0.01, max_delay: float = 0.05,
+              stats_interval: float = 1.0):
+        """
+        启动多线程高频点击
+        
+        Args:
+            thread_count: 线程数量
+            refresh_interval: 每 N 次点击刷新一次（0 表示不刷新）
+            min_delay: 最小延迟（秒）
+            max_delay: 最大延迟（秒）
+            stats_interval: 统计信息输出间隔（秒）
+        """
+        if not self.automation.device_udid:
+            print("❌ 设备未连接，请先调用 automation.connect()")
+            return
+        
+        self.running = True
+        self.click_count = 0
+        
+        print("=" * 60)
+        print("🚀 高频点击器启动")
+        print("=" * 60)
+        print(f"按钮坐标: ({self.button_x}, {self.button_y})")
+        print(f"线程数量: {thread_count}")
+        print(f"刷新间隔: 每 {refresh_interval} 次点击" if refresh_interval > 0 else "刷新: 关闭")
+        print(f"延迟范围: {min_delay:.3f}s - {max_delay:.3f}s")
+        print("=" * 60)
+        print("按 Ctrl+C 停止...\n")
+        
+        start_time = time.time()
+        last_count = 0
+        
+        try:
+            with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                futures = [
+                    executor.submit(self.worker, i, refresh_interval, min_delay, max_delay)
+                    for i in range(thread_count)
+                ]
+                
+                # 主循环：显示统计信息
+                while self.running:
+                    time.sleep(stats_interval)
+                    
+                    elapsed = time.time() - start_time
+                    current_count = self.click_count
+                    clicks_per_sec = (current_count - last_count) / stats_interval
+                    total_clicks_per_sec = current_count / elapsed if elapsed > 0 else 0
+                    
+                    print(f"⏱️  已运行: {elapsed:.1f}s | "
+                          f"总点击: {current_count} 次 | "
+                          f"当前速度: {clicks_per_sec:.1f} 次/秒 | "
+                          f"平均速度: {total_clicks_per_sec:.1f} 次/秒")
+                    
+                    last_count = current_count
+                    
+        except KeyboardInterrupt:
+            self.stop()
+        except Exception as e:
+            print(f"\n❌ 发生错误: {e}")
+            self.stop()
+    
+    def stop(self):
+        """停止点击"""
+        self.running = False
+        print(f"\n\n✅ 已停止")
+        print(f"📊 总点击次数: {self.click_count}")
+        print("=" * 60)
 
 
 # 常用按键码常量
