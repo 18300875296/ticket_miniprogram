@@ -4,6 +4,7 @@ ADB 坐标辅助工具
 """
 import json
 import os
+from datetime import datetime
 from adb_automation import ADBAutomation
 from typing import Dict, Optional, Tuple
 
@@ -156,8 +157,9 @@ def interactive_coordinate_setup():
         print("中心点: x = (x1+x2)/2, y = (y1+y2)/2")
     
     elif choice == '2':
-        # 截图
-        filename = f'screen_{screen_key}.png'
+        # 截图（使用时间戳避免被覆盖）
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'screen_{screen_key}_{ts}.png'
         auto.take_screenshot(filename)
         print(f"\n✅ 截图已保存到: {filename}")
         print("打开图片，使用图片查看器查看元素位置的坐标")
