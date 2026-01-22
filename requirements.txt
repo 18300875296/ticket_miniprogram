@@ -1,4 +1,13 @@
-# ADB 自动化不需要额外的 Python 依赖
-# 只需要系统安装 ADB（Android SDK Platform Tools）
-# 下载地址: https://developer.android.com/studio/releases/platform-tools
+# Python 依赖库
+# 安装命令: pip install -r requirements.txt
 
+# 图像处理库（用于 fast_multi_thread_purchase.py 中的像素检测功能）
+Pillow>=10.0.0
+
+# ============================================
+# 系统依赖（非 Python 库）
+# ============================================
+# ADB（Android SDK Platform Tools）- 必须安装
+# 下载地址: https://developer.android.com/studio/releases/platform-tools
+# Windows: 下载后解压，将 adb.exe 所在目录添加到系统 PATH 环境变量
+# 验证安装: 在命令行运行 `adb version` 应该显示版本信息

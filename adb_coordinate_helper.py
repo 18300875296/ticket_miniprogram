@@ -4,6 +4,7 @@ ADB 坐标辅助工具
 """
 import json
 import os
+import re
 from datetime import datetime
 from adb_automation import ADBAutomation
 from typing import Dict, Optional, Tuple
@@ -148,13 +149,131 @@ def interactive_coordinate_setup():
     choice = input("\n请选择 (1-5): ").strip()
     
     if choice == '1':
-        # 获取 UI 层次结构
-        filename = f'ui_{screen_key}.xml'
+        # 获取 UI 层次结构（使用时间戳避免被覆盖）
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'ui_{screen_key}_{ts}.xml'
         auto.get_ui_hierarchy(filename)
         print(f"\n✅ UI 层次结构已保存到: {filename}")
         print("打开文件查找元素的 bounds 属性")
         print("格式: bounds=\"[x1,y1][x2,y2]\"")
         print("中心点: x = (x1+x2)/2, y = (y1+y2)/2")
+        
+        # 尝试解析并显示一些有用的节点信息
+        try:
+            import xml.etree.ElementTree as ET
+            from xml.dom import minidom
+            
+            tree = ET.parse(filename)
+            root = tree.getroot()
+            
+            # 保存格式化的 XML 文件（更易读）
+            try:
+                # 使用 minidom 格式化 XML
+                rough_string = ET.tostring(root, encoding='unicode')
+                reparsed = minidom.parseString(rough_string)
+                formatted_xml = reparsed.toprettyxml(indent="  ")
+                
+                # 保存格式化版本
+                formatted_filename = filename.replace('.xml', '_formatted.xml')
+                with open(formatted_filename, 'w', encoding='utf-8') as f:
+                    f.write(formatted_xml)
+                print(f"✅ 格式化版本已保存到: {formatted_filename}")
+            except Exception as e:
+                print(f"⚠️  格式化 XML 时出错: {e}")
+            
+            # 辅助函数：解析 bounds 并计算中心点
+            def parse_bounds(bounds_str: str) -> Optional[Tuple[int, int]]:
+                """解析 bounds 字符串，返回中心点坐标"""
+                try:
+                    # 格式: "[x1,y1][x2,y2]"
+                    match = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                    if match:
+                        x1, y1, x2, y2 = map(int, match.groups())
+                        center_x = (x1 + x2) // 2
+                        center_y = (y1 + y2) // 2
+                        return (center_x, center_y)
+                except:
+                    pass
+                return None
+            
+            # 统计节点信息
+            nodes_with_bounds = []
+            nodes_with_text = []
+            nodes_with_resource_id = []
+            
+            def traverse_node(node, depth=0):
+                """递归遍历节点"""
+                # 检查是否有 bounds 属性
+                bounds = node.get('bounds')
+                if bounds:
+                    center = parse_bounds(bounds)
+                    nodes_with_bounds.append({
+                        'class': node.get('class', ''),
+                        'text': node.get('text', ''),
+                        'resource-id': node.get('resource-id', ''),
+                        'bounds': bounds,
+                        'center': center,
+                        'clickable': node.get('clickable', 'false')
+                    })
+                
+                # 检查是否有文本
+                text = node.get('text')
+                if text and text.strip():
+                    nodes_with_text.append({
+                        'text': text,
+                        'bounds': node.get('bounds', ''),
+                        'center': parse_bounds(node.get('bounds', '')),
+                        'class': node.get('class', '')
+                    })
+                
+                # 检查是否有 resource-id
+                resource_id = node.get('resource-id')
+                if resource_id and resource_id.strip():
+                    nodes_with_resource_id.append({
+                        'resource-id': resource_id,
+                        'bounds': node.get('bounds', ''),
+                        'center': parse_bounds(node.get('bounds', '')),
+                        'text': node.get('text', '')
+                    })
+                
+                # 递归处理子节点
+                for child in node:
+                    traverse_node(child, depth + 1)
+            
+            traverse_node(root)
+            
+            print(f"\n📊 节点统计信息：")
+            print(f"  - 有 bounds 属性的节点: {len(nodes_with_bounds)} 个")
+            print(f"  - 有文本内容的节点: {len(nodes_with_text)} 个")
+            print(f"  - 有 resource-id 的节点: {len(nodes_with_resource_id)} 个")
+            
+            # 显示一些可点击的节点（通常这些是按钮）
+            clickable_nodes = [n for n in nodes_with_bounds if n['clickable'] == 'true']
+            if clickable_nodes:
+                print(f"\n🖱️  可点击的节点（前10个）:")
+                for i, node in enumerate(clickable_nodes[:10], 1):
+                    center_info = f", 中心点: {node['center']}" if node['center'] else ""
+                    print(f"  {i}. class={node['class']}, bounds={node['bounds']}{center_info}")
+                    if node['text']:
+                        print(f"     文本: {node['text']}")
+                    if node['resource-id']:
+                        print(f"     resource-id: {node['resource-id']}")
+            
+            # 显示一些有文本的节点
+            if nodes_with_text:
+                print(f"\n📝 有文本的节点（前10个）:")
+                for i, node in enumerate(nodes_with_text[:10], 1):
+                    center_info = f", 中心点: {node['center']}" if node['center'] else ""
+                    print(f"  {i}. 文本: \"{node['text']}\"")
+                    print(f"     bounds: {node['bounds']}{center_info}")
+                    if node['class']:
+                        print(f"     class: {node['class']}")
+            
+        except Exception as e:
+            print(f"\n⚠️  解析 XML 文件时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            print("   但文件已成功保存，你可以手动打开查看")
     
     elif choice == '2':
         # 截图（使用时间戳避免被覆盖）
