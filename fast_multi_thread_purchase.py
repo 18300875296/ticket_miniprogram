@@ -22,22 +22,18 @@ import random
 from io import BytesIO
 from typing import Optional, Tuple, List
 from datetime import datetime, timedelta
+import os
 
 try:
     from PIL import Image
+    import numpy as np
     PIL_AVAILABLE = True
+    NUMPY_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    print("⚠️ 警告: PIL/Pillow 未安装，像素检测功能将不可用")
-    print("   安装命令: pip install Pillow")
-
-# ========== 按钮坐标配置 ==========
-DETAIL_BOTTOM_X = 505
-DETAIL_BOTTOM_Y = 2140
-PAY_BUTTON_X = 825
-PAY_BUTTON_Y = 2260
-POPUP_CONFIRM_X = 585
-POPUP_CONFIRM_Y = 1545
+    NUMPY_AVAILABLE = False
+    print("⚠️ 警告: PIL/Pillow 或 numpy 未安装，像素检测功能将不可用")
+    print("   安装命令: pip install Pillow numpy")
 
 # ========== 阶段配置（包含检测点和任务）==========
 # 格式说明：
@@ -52,40 +48,54 @@ STAGE_CONFIGS = {
     'stage1': {
         'name': '详情页',
         'detectors': [
-            # 在这里添加详情页的唯一标识采样点
-            # 示例：((100, 100), (255, 255, 255), 10),
+            ((272, 2035), (17, 17, 17), 10),   # #111111 ✅ 匹配
+            ((811, 2024), (17, 17, 17), 10),   # #111111 ✅ 匹配
+            ((604, 2047), (196, 196, 196), 15), # 实际颜色 RGB(196, 196, 196)，容差15
         ],
         'action': {
             'type': 'click',
-            'x': DETAIL_BOTTOM_X,
-            'y': DETAIL_BOTTOM_Y,
+            'x': 540,
+            'y': 2044,  # 立即购买按钮
         },
         'next_stage': 'stage2',
     },
     'stage2': {
         'name': '支付页',
         'detectors': [
-            ((PAY_BUTTON_X, PAY_BUTTON_Y), (0, 0, 0), 18),  # 需要根据实际情况修改颜色
+            ((171, 1958), (17, 17, 17), 10),   # #111111
+            ((584, 1947), (17, 17, 17), 10),   # #111111
+            ((520, 1959), (255, 255, 255), 10), # #ffff (白色)
         ],
         'action': {
             'type': 'click',
-            'x': PAY_BUTTON_X,
-            'y': PAY_BUTTON_Y,
+            'x': 485,
+            'y': 1940,  # 确认按钮
         },
         'next_stage': 'stage3',
     },
     'stage3': {
-        'name': '弹框页',
+        'name': '确认信息页',
         'detectors': [
-            ((100, 300), None, 8),   # 蒙层检测
-            ((980, 300), None, 8),
-            ((100, 2040), None, 8),
-            ((980, 2040), None, 8),
+            ((514, 2065), (230, 0, 32), 10),   # #E60020 (红色)
+            ((656, 2071), (17, 17, 17), 10),   # #111111
         ],
         'action': {
             'type': 'click',
-            'x': POPUP_CONFIRM_X,
-            'y': POPUP_CONFIRM_Y,
+            'x': 771,
+            'y': 2050,  # 确认信息并支付按钮
+        },
+        'next_stage': 'stage4',
+    },
+    'stage4': {
+        'name': '弹框页',
+        'detectors': [
+            ((327, 1394), (17, 17, 17), 10),   # #111111
+            ((709, 1378), (17, 17, 17), 10),   # #111111
+        ],
+        'action': {
+            'type': 'click',
+            'x': 461,
+            'y': 1362,  # 确认无误按钮（弹框上的）
         },
         'next_stage': None,  # 最后阶段
     },
@@ -106,6 +116,11 @@ CLICK_COORD_OFFSET = 8      # 坐标随机偏移范围（像素）
 SCREENSHOT_INTERVAL = 0.10   # 截图间隔（秒），根据实际硬件能力调整（adb screencap通常需要80-150ms）
 DETECTION_INTERVAL = 0.02    # 检测间隔（秒），可以比截图快，因为只是读取内存中的图片
 
+# ========== 调试配置 ==========
+DEBUG_MODE = True           # 是否启用调试模式（显示详细检测信息）
+DEBUG_SAVE_SCREENSHOTS = True # 是否保存截图用于调试（保存在 temp_screenshots 目录）
+DEBUG_DETECTION_LOG = True   # 是否输出检测日志（避免刷屏）
+
 
 class TimedMultiThreadPurchase:
     """定时多线程快速抢票类"""
@@ -113,9 +128,20 @@ class TimedMultiThreadPurchase:
     def __init__(self, auto: ADBAutomation):
         self.auto = auto
         
-        # 最新截图存储（使用锁保护）
-        self.latest_screenshot_lock = threading.Lock()
-        self.latest_screenshot_data: Optional[bytes] = None
+        # 屏幕尺寸（初始化时获取一次，避免重复调用）
+        print("📱 获取屏幕尺寸...")
+        self.screen_width, self.screen_height = self.auto.get_screen_size()
+        print(f"✅ 屏幕尺寸: {self.screen_width}x{self.screen_height}")
+        
+        # 内存截图系统（使用锁保护）
+        self.frame_lock = threading.Lock()
+        self.latest_frame: Optional[np.ndarray] = None  # 最新截图帧（numpy array）
+        self.latest_png_data: Optional[bytes] = None    # 最新PNG数据（用于保存截图）
+        
+        # 调试相关
+        self.debug_screenshot_dir = "temp_screenshots"
+        if DEBUG_SAVE_SCREENSHOTS:
+            os.makedirs(self.debug_screenshot_dir, exist_ok=True)
         
         # 阶段状态管理
         self.current_stage: Optional[str] = None  # 当前阶段名称
@@ -156,105 +182,178 @@ class TimedMultiThreadPurchase:
         offset_y = random.randint(-CLICK_COORD_OFFSET, CLICK_COORD_OFFSET)
         self.auto._run_adb_command(['shell', 'input', 'tap', str(x + offset_x), str(y + offset_y)])
     
-    def _load_image(self, data: bytes) -> Optional[Image.Image]:
-        """加载图片"""
-        try:
-            return Image.open(BytesIO(data))
-        except Exception as e:
-            print(f"❌ 加载图片失败: {e}")
+    def _png_bytes_to_numpy(self, png_data: bytes) -> Optional[np.ndarray]:
+        """
+        将 PNG bytes 转换为 numpy array（RGBA格式）
+        
+        Args:
+            png_data: PNG 格式的字节数据
+            
+        Returns:
+            numpy array (height, width, 4) RGBA格式，失败返回 None
+        """
+        if not PIL_AVAILABLE or not NUMPY_AVAILABLE:
             return None
+        
+        try:
+            # 从 bytes 加载图片
+            img = Image.open(BytesIO(png_data))
+            
+            # 转换为 RGBA 模式（确保有 alpha 通道）
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            
+            # 转换为 numpy array
+            frame = np.array(img)
+            
+            return frame
+        except Exception as e:
+            print(f"❌ PNG 解码失败: {e}")
+            return None
+    
+    def _get_latest_frame(self) -> Optional[np.ndarray]:
+        """获取最新截图帧（线程安全）"""
+        with self.frame_lock:
+            return self.latest_frame
+    
+    def debug_check_detection_points(self):
+        """
+        调试功能：检查所有检测点的实际颜色值
+        """
+        frame = self._get_latest_frame()
+        if frame is None:
+            print("❌ 没有可用的截图")
+            return
+        
+        print("\n" + "=" * 60)
+        print("🔍 检测点颜色调试信息")
+        print("=" * 60)
+        print(f"截图尺寸: {frame.shape[1]}x{frame.shape[0]}")
+        print()
+        
+        for stage_name, config in STAGE_CONFIGS.items():
+            print(f"📋 阶段: {config['name']} ({stage_name})")
+            detectors = config.get('detectors', [])
+            
+            if not detectors:
+                print("  ⚠️ 没有配置检测点")
+                print()
+                continue
+            
+            for i, ((x, y), target, tol) in enumerate(detectors, 1):
+                # 边界检查
+                if y >= frame.shape[0] or x >= frame.shape[1]:
+                    print(f"  检测点{i}: ({x}, {y}) ❌ 超出截图范围")
+                    continue
+                
+                # 获取实际颜色
+                r, g, b = frame[y, x][:3]
+                
+                if target is None:
+                    # 蒙层检测
+                    print(f"  检测点{i}: ({x}, {y}) - 蒙层检测")
+                    print(f"    实际颜色: RGB({r}, {g}, {b})")
+                    print(f"    容差: {tol}")
+                else:
+                    # 颜色匹配检测
+                    diff = [abs(r - target[0]), abs(g - target[1]), abs(b - target[2])]
+                    max_diff = max(diff)
+                    is_match = self._color_close((r, g, b), target, tol)
+                    status = "✅ 匹配" if is_match else "❌ 不匹配"
+                    
+                    print(f"  检测点{i}: ({x}, {y}) - 颜色匹配")
+                    print(f"    实际颜色: RGB({r}, {g}, {b})")
+                    print(f"    目标颜色: RGB{target}")
+                    print(f"    容差: {tol}, 最大差值: {max_diff}")
+                    print(f"    状态: {status}")
+            
+            print()
+        
+        print("=" * 60)
+        
+        # 保存当前截图
+        if DEBUG_SAVE_SCREENSHOTS:
+            try:
+                with self.frame_lock:
+                    png_data = self.latest_png_data
+                if png_data:
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+                    filename = os.path.join(self.debug_screenshot_dir, f"debug_check_{timestamp}.png")
+                    with open(filename, 'wb') as f:
+                        f.write(png_data)
+                    print(f"💾 当前截图已保存: {filename}")
+            except Exception as e:
+                print(f"⚠️ 保存截图失败: {e}")
     
     def _color_close(self, c1: Tuple[int, int, int], c2: Tuple[int, int, int], tolerance: int) -> bool:
         """判断两个颜色是否接近"""
         return all(abs(c1[i] - c2[i]) <= tolerance for i in range(3))
     
-    def _get_latest_screenshot(self) -> Optional[bytes]:
-        """获取最新截图（线程安全）"""
-        with self.latest_screenshot_lock:
-            return self.latest_screenshot_data
-    
-    def _set_latest_screenshot(self, data: bytes):
-        """设置最新截图（线程安全）"""
-        with self.latest_screenshot_lock:
-            self.latest_screenshot_data = data
-    
-    # ---------- 检测逻辑 ----------
-    def _detect_stage(self, img: Image.Image, stage_name: str) -> bool:
-        """
-        检测页面阶段（通过采样点颜色）
-        
-        Args:
-            img: 图片对象
-            stage_name: 阶段名称（在STAGE_CONFIGS中定义）
-        
-        Returns:
-            bool: 是否匹配该阶段（所有采样点都匹配才返回True）
-        """
-        try:
-            # 转换为RGB模式
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+    def _detect_stage(self, frame: np.ndarray, stage_name: str) -> bool:
+        detectors = STAGE_CONFIGS[stage_name]['detectors']
+        if not detectors:
+            return False
+
+        overlay_samples = []
+        normal_samples = []
+
+        for (x, y), target, tol in detectors:
+            if target is None:
+                overlay_samples.append((x, y, tol))
+            else:
+                normal_samples.append((x, y, target, tol))
+
+        # —— 蒙层检测（颜色一致性）——
+        if overlay_samples:
+            base = None
+            debug_info = []
+            for x, y, tol in overlay_samples:
+                # 边界检查
+                if y >= frame.shape[0] or x >= frame.shape[1]:
+                    if DEBUG_DETECTION_LOG:
+                        print(f"⚠️ 检测点超出范围: ({x}, {y}), 截图尺寸: {frame.shape[1]}x{frame.shape[0]}")
+                    return False
+                
+                r, g, b = frame[y, x][:3]
+                if base is None:
+                    base = (r, g, b)
+                    debug_info.append(f"基准点({x},{y}): RGB({r},{g},{b})")
+                else:
+                    is_close = self._color_close(base, (r, g, b), tol)
+                    debug_info.append(f"点({x},{y}): RGB({r},{g},{b}) {'✅' if is_close else '❌'}")
+                    if not is_close:
+                        if DEBUG_DETECTION_LOG:
+                            print(f"🔍 [{stage_name}] 蒙层检测失败:")
+                            for info in debug_info:
+                                print(f"   {info}")
+                        return False
             
-            detectors = STAGE_CONFIGS[stage_name]['detectors']
-            
-            # 【修复问题2】空detector列表直接返回False，不允许空检测
-            if not detectors:
+            if DEBUG_DETECTION_LOG and DEBUG_MODE:
+                print(f"✅ [{stage_name}] 蒙层检测通过: {len(overlay_samples)} 个点颜色一致")
+
+        # —— 普通颜色检测 ——
+        for x, y, target, tol in normal_samples:
+            # 边界检查
+            if y >= frame.shape[0] or x >= frame.shape[1]:
+                if DEBUG_DETECTION_LOG:
+                    print(f"⚠️ 检测点超出范围: ({x}, {y}), 截图尺寸: {frame.shape[1]}x{frame.shape[0]}")
                 return False
             
-            # 收集蒙层检测点的颜色（如果存在）
-            overlay_colors = []
-            normal_detectors = []
+            r, g, b = frame[y, x][:3]
+            is_match = self._color_close((r, g, b), target, tol)
             
-            for point_config in detectors:
-                point, target_color, tolerance = point_config
-                if target_color is None:
-                    # 蒙层检测点，先收集颜色
-                    overlay_colors.append((point, tolerance))
-                else:
-                    # 正常颜色匹配检测点
-                    normal_detectors.append((point, target_color, tolerance))
+            if DEBUG_DETECTION_LOG and DEBUG_MODE:
+                diff = [abs(r - target[0]), abs(g - target[1]), abs(b - target[2])]
+                max_diff = max(diff)
+                status = "✅" if is_match else "❌"
+                print(f"🔍 [{stage_name}] 点({x},{y}): 实际RGB({r},{g},{b}) vs 目标RGB{target} "
+                      f"容差={tol} 最大差值={max_diff} {status}")
             
-            # 【修复问题3】处理蒙层检测：判断多个蒙层点的颜色是否彼此接近
-            if overlay_colors:
-                overlay_rgb_list = []
-                for point, tolerance in overlay_colors:
-                    x, y = point
-                    try:
-                        px = img.getpixel((x, y))
-                        r, g, b = px[:3]
-                        overlay_rgb_list.append((r, g, b, tolerance))
-                    except Exception:
-                        return False
-                
-                # 蒙层检测：所有点的RGB值应该彼此接近（低方差）
-                # 计算所有点之间的颜色差异
-                for i in range(len(overlay_rgb_list)):
-                    r1, g1, b1, tol1 = overlay_rgb_list[i]
-                    for j in range(i + 1, len(overlay_rgb_list)):
-                        r2, g2, b2, tol2 = overlay_rgb_list[j]
-                        # 使用两个容差中的较大值
-                        max_tolerance = max(tol1, tol2)
-                        if not self._color_close((r1, g1, b1), (r2, g2, b2), max_tolerance):
-                            return False
-            
-            # 处理正常颜色匹配检测点
-            for point, target_color, tolerance in normal_detectors:
-                x, y = point
-                try:
-                    px = img.getpixel((x, y))
-                    r, g, b = px[:3]
-                    
-                    if not self._color_close((r, g, b), target_color, tolerance):
-                        return False
-                except Exception:
-                    return False
-            
-            # 所有采样点都匹配
-            return True
-        except Exception as e:
-            print(f"❌ 阶段检测异常 ({stage_name}): {e}")
-            return False
-    
+            if not is_match:
+                return False
+
+        return True
+
     def _execute_stage_action(self, stage_name: str):
         """
         执行阶段对应的任务（支持循环点击）
@@ -330,28 +429,88 @@ class TimedMultiThreadPurchase:
         # elif action_type == 'wait':
         #     ...
     
-    # ---------- 截图线程 ----------
     def thread_screenshot_loop(self):
-        """截图线程：持续轮询截图"""
+        """
+        截图线程：持续获取截图并转换为内存中的 numpy array
+        优化：直接使用内存，避免文件 I/O
+        """
+        consecutive_failures = 0
+        max_failures = 5
+        screenshot_count = 0
+        last_status_time = time.time()
+        
+        print("📸 截图线程开始运行...")
+        
         while self.running.is_set():
             try:
-                # 直接获取截图到内存
-                success, screenshot_data = self.auto._run_adb_command(
-                    ['shell', 'screencap', '-p'],
-                    timeout=3,
-                    capture_binary=True
-                )
+                # 获取原始 PNG 数据（直接从 ADB 获取，不经过文件）
+                png_data = self.auto.get_screenshot_data()
+                if not png_data:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_failures:
+                        print(f"⚠️ 连续 {consecutive_failures} 次截图失败，暂停 0.5 秒")
+                        time.sleep(0.5)
+                        consecutive_failures = 0
+                    else:
+                        time.sleep(0.05)
+                    continue
                 
-                if success and screenshot_data:
-                    # 直接覆盖最新截图（线程安全）
-                    self._set_latest_screenshot(screenshot_data)
-                    self.update_stats('screenshots')
+                # 重置失败计数
+                consecutive_failures = 0
                 
+                # 转换为 numpy array（RGBA 格式）
+                frame = self._png_bytes_to_numpy(png_data)
+                if frame is None:
+                    print("⚠️ PNG 解码失败")
+                    time.sleep(0.05)
+                    continue
+                
+                # 验证尺寸（防止尺寸不匹配）
+                if frame.shape[0] != self.screen_height or frame.shape[1] != self.screen_width:
+                    print(f"⚠️ 截图尺寸不匹配: 期望 {self.screen_width}x{self.screen_height}, "
+                          f"实际 {frame.shape[1]}x{frame.shape[0]}")
+                    time.sleep(0.05)
+                    continue
+                
+                # 更新最新帧和PNG数据（线程安全）
+                with self.frame_lock:
+                    self.latest_frame = frame
+                    self.latest_png_data = png_data  # 保存PNG数据用于调试
+                
+                # 更新统计
+                screenshot_count += 1
+                with self.stats_lock:
+                    self.stats['screenshots'] += 1
+                
+                # 调试：保存截图（每10张保存一次，避免文件过多）
+                if DEBUG_SAVE_SCREENSHOTS and screenshot_count % 10 == 0:
+                    try:
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+                        filename = os.path.join(self.debug_screenshot_dir, f"debug_{timestamp}.png")
+                        with open(filename, 'wb') as f:
+                            f.write(png_data)
+                        if DEBUG_MODE:
+                            print(f"💾 已保存调试截图: {filename}")
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            print(f"⚠️ 保存调试截图失败: {e}")
+                
+                # 每10秒输出一次状态（避免刷屏）
+                current_time = time.time()
+                if current_time - last_status_time >= 10.0:
+                    print(f"📸 截图线程运行中... 已获取 {screenshot_count} 张截图")
+                    last_status_time = current_time
+                
+                # 按配置的间隔等待
                 time.sleep(SCREENSHOT_INTERVAL)
+
             except Exception as e:
                 print(f"❌ 截图线程错误: {e}")
-                time.sleep(0.1)
-    
+                import traceback
+                traceback.print_exc()
+                consecutive_failures += 1
+                time.sleep(0.05)
+
     def thread_detect_stage(self, stage_name: str):
         """
         阶段检测线程：持续检测指定阶段（带阶段门禁）
@@ -404,20 +563,33 @@ class TimedMultiThreadPurchase:
                         time.sleep(DETECTION_INTERVAL)
                         continue
                 
-                # 获取最新截图
-                screenshot_data = self._get_latest_screenshot()
-                if not screenshot_data:
+                # 获取最新截图帧（内存中，无需文件 I/O）
+                frame = self._get_latest_frame()
+                if frame is None:
+                    # 截图还未就绪，等待
                     time.sleep(DETECTION_INTERVAL)
                     continue
                 
-                # 加载图片并检测
-                img = self._load_image(screenshot_data)
-                if not img:
-                    time.sleep(DETECTION_INTERVAL)
-                    continue
+                # 检测阶段（直接使用 numpy array）
+                detected = self._detect_stage(frame, stage_name)
                 
-                # 检测阶段
-                if self._detect_stage(img, stage_name):
+                # 调试：如果检测到阶段，保存截图
+                if detected and DEBUG_SAVE_SCREENSHOTS:
+                    try:
+                        with self.frame_lock:
+                            png_data = self.latest_png_data
+                        if png_data:
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+                            filename = os.path.join(self.debug_screenshot_dir, f"detected_{stage_name}_{timestamp}.png")
+                            with open(filename, 'wb') as f:
+                                f.write(png_data)
+                            if DEBUG_MODE:
+                                print(f"💾 检测到阶段，已保存截图: {filename}")
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            print(f"⚠️ 保存检测截图失败: {e}")
+                
+                if detected:
                     with self.stage_lock:
                         # 双重检查：再次确认阶段门禁（防止并发问题）
                         current = self.current_stage
@@ -487,10 +659,33 @@ class TimedMultiThreadPurchase:
             print(f"⏰ 等待到 {target_time.strftime('%H:%M:%S')}（提前{PAGE_LOAD_TIME*1000:.0f}ms进入）")
             print(f"   当前时间: {now.strftime('%H:%M:%S.%f')[:-3]}")
             print(f"   进入时间: {enter_time.strftime('%H:%M:%S.%f')[:-3]}")
-            print(f"   等待时长: {wait_seconds:.3f}秒")
+            print(f"   等待时长: {wait_seconds:.1f}秒")
             
-            # 精确等待
-            time.sleep(wait_seconds)
+            # 如果等待时间较长，定期输出状态
+            if wait_seconds > 10:
+                print("💡 等待期间，截图和检测线程在后台运行...")
+                last_status_time = time.time()
+                status_interval = 10.0  # 每10秒输出一次
+                
+                while wait_seconds > 0:
+                    sleep_time = min(1.0, wait_seconds)  # 每次最多睡1秒
+                    time.sleep(sleep_time)
+                    wait_seconds -= sleep_time
+                    
+                    # 定期输出状态
+                    current_time = time.time()
+                    if current_time - last_status_time >= status_interval:
+                        remaining = wait_seconds
+                        frame = self._get_latest_frame()
+                        frame_status = "✅" if frame is not None else "⏳"
+                        with self.stats_lock:
+                            screenshot_count = self.stats['screenshots']
+                        print(f"   ⏳ 剩余等待: {remaining:.1f}秒 | 截图状态: {frame_status} | 已截图: {screenshot_count} 张")
+                        last_status_time = current_time
+            else:
+                # 等待时间短，直接等待
+                time.sleep(wait_seconds)
+            
             print(f"✅ 已到达进入时间: {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
         else:
             print(f"⚠️ 进入时间已过，立即开始")
@@ -537,8 +732,20 @@ class TimedMultiThreadPurchase:
         screenshot_thread.start()
         print("\n✅ 截图线程已启动")
         
-        # 等待截图就绪
-        time.sleep(0.2)
+        # 等待截图就绪，并验证
+        print("⏳ 等待截图就绪...")
+        for i in range(10):  # 最多等待2秒
+            time.sleep(0.2)
+            frame = self._get_latest_frame()
+            if frame is not None:
+                print(f"✅ 截图已就绪 (尺寸: {frame.shape[1]}x{frame.shape[0]})")
+                # 调试：检查检测点颜色
+                if DEBUG_MODE:
+                    print("\n🔍 执行初始检测点检查...")
+                    self.debug_check_detection_points()
+                break
+        else:
+            print("⚠️ 警告: 截图未就绪，但继续运行（可能截图线程有问题）")
         
         # 【修复问题1】设置初始阶段（如果未指定且stage1没有detector，默认设为stage1）
         if initial_stage is None:
@@ -580,8 +787,28 @@ class TimedMultiThreadPurchase:
         try:
             # 持续运行，直到所有阶段完成或手动停止
             # 可以通过检查 current_stage 来判断是否完成
+            last_status_time = time.time()
+            status_interval = 5.0  # 每5秒输出一次状态
+            
             while self.running.is_set():
                 time.sleep(0.1)
+                
+                # 定期输出状态
+                current_time = time.time()
+                if current_time - last_status_time >= status_interval:
+                    with self.stage_lock:
+                        current = self.current_stage
+                    with self.stats_lock:
+                        stats = self.get_stats()
+                    
+                    frame = self._get_latest_frame()
+                    frame_status = "✅" if frame is not None else "❌"
+                    
+                    print(f"📊 状态: 当前阶段={current or '未知'}, "
+                          f"截图={frame_status}, "
+                          f"截图数={stats['screenshots']}, "
+                          f"检测次数={sum(stats['stage_detections'].values())}")
+                    last_status_time = current_time
                 
                 # 检查是否完成所有阶段
                 with self.stage_lock:

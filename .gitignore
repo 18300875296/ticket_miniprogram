@@ -1,1 +1,5 @@
 node_modules
+
+# 临时截图目录
+temp_screenshots/
+debug_screenshots/

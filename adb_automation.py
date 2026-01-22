@@ -149,7 +149,8 @@ class ADBAutomation:
                     cmd,
                     capture_output=True,
                     timeout=timeout,
-                    check=False
+                    check=False,
+                    text=False  # 关键：必须设置为 False 才能获取二进制数据
                 )
                 return (result.returncode == 0, result.stdout)
             else:
@@ -244,6 +245,49 @@ class ADBAutomation:
         
         print("❌ 截图失败")
         return False
+    
+    def get_screenshot_data(self) -> Optional[bytes]:
+        """
+        获取截图数据（使用文件方式，避免换行符问题）
+        
+        Returns:
+            截图数据的 bytes，失败返回 None
+        """
+        import tempfile
+        import os
+        
+        # 使用临时文件方式，避免换行符问题
+        temp_path = '/sdcard/screenshot_temp.png'
+        success, _ = self._run_adb_command(['shell', 'screencap', '-p', temp_path])
+        
+        if success:
+            # 拉取文件到本地临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                local_temp = tmp_file.name
+            
+            try:
+                success, _ = self._run_adb_command(['pull', temp_path, local_temp])
+                if success:
+                    # 读取文件数据
+                    with open(local_temp, 'rb') as f:
+                        data = f.read()
+                    # 删除设备上的临时文件
+                    self._run_adb_command(['shell', 'rm', temp_path])
+                    # 删除本地临时文件
+                    try:
+                        os.unlink(local_temp)
+                    except:
+                        pass
+                    return data
+            except Exception as e:
+                # 清理本地临时文件
+                try:
+                    os.unlink(local_temp)
+                except:
+                    pass
+                return None
+        
+        return None
     
     def get_ui_hierarchy(self, filename: str) -> bool:
         """
